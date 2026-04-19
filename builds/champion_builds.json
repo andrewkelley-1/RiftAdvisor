@@ -1,0 +1,30 @@
+{
+  "Yasuo": {
+    "Mid": {
+      "core_items": ["Infinity Edge", "Kraken Slayer", "Immortal Shieldbow"],
+      "situational": ["Mortal Reminder", "Wit's End", "Guardian Angel", "Death's Dance"],
+      "boots": "Berserker's Greaves"
+    }
+  },
+  "Zoe": {
+    "Mid": {
+      "core_items": ["Luden's Tempest", "Shadowflame", "Rabadon's Deathcap"],
+      "situational": ["Zhonya's Hourglass", "Banshee's Veil", "Void Staff"],
+      "boots": "Sorcerer's Shoes"
+    }
+  },
+  "LeBlanc": {
+    "Mid": {
+      "core_items": ["Luden's Tempest", "Shadowflame", "Rabadon's Deathcap"],
+      "situational": ["Zhonya's Hourglass", "Banshee's Veil", "Void Staff"],
+      "boots": "Sorcerer's Shoes"
+    }
+  },
+  "Sylas": {
+    "Mid": {
+      "core_items": ["Luden's Tempest", "Shadowflame", "Rabadon's Deathcap"],
+      "situational": ["Zhonya's Hourglass", "Banshee's Veil", "Void Staff"],
+      "boots": "Sorcerer's Shoes"
+    }
+  }
+}
