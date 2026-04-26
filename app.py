@@ -5,6 +5,7 @@ import os
 import json
 from pathlib import Path
 from riot_api import get_player_profile
+from item_filter import format_items_for_prompt, get_champion_classes
 
 # -------------------------------------------------------
 # Setup
@@ -13,14 +14,11 @@ load_dotenv(Path(__file__).parent / '.env')
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 DATA_DIR = Path(__file__).parent / "data"
-BUILDS_DIR = Path(__file__).parent / "builds"
 
 def load_json(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
         return json.load(f)
 
-items_data = load_json(DATA_DIR / "items.json")
-champion_builds = load_json(BUILDS_DIR / "champion_builds.json")
 patch_info = load_json(DATA_DIR / "patch.json")
 champion_data = load_json(DATA_DIR / "champions.json")
 
@@ -29,50 +27,44 @@ ROLES = ["Top", "Jungle", "Mid", "Bot", "Support"]
 RANKS = ["Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"]
 
 # -------------------------------------------------------
-# Build enrichment
+# Helpers
 # -------------------------------------------------------
-def get_item_stats(item_name):
-    item = items_data.get(item_name)
-    if not item:
-        return f"{item_name}: (data not found)"
-    stats_str = ", ".join(f"{k}: {v}" for k, v in item["stats"].items()) or "no stats"
-    return f"{item_name} ({item['cost']}g) — {item['description']} | Stats: {stats_str}"
-
-def enrich_build(build):
-    return "\n".join(f"  - {get_item_stats(item)}" for item in build)
-
-def get_build_context(champion, role):
-    champ_data = champion_builds.get(champion)
-    if not champ_data:
-        return f"No curated build found for {champion}."
-    role_data = champ_data.get(role) or champ_data.get(list(champ_data.keys())[0])
-    core = role_data.get("core_items", [])
-    situational = role_data.get("situational", [])
-    boots = role_data.get("boots", "")
-    context = f"Patch {patch_info['patch']} recommended build for {champion} ({role}):\n"
-    context += f"\nCore items:\n{enrich_build(core)}"
-    context += f"\n\nSituational items:\n{enrich_build(situational)}"
-    if boots:
-        context += f"\n\nBoots:\n{enrich_build([boots])}"
-    return context
-
 def format_team(team_dict):
     return "\n".join(
         f"  - {role}: {champ}" for role, champ in team_dict.items() if champ
     ) or "  None selected"
 
+
+def format_match_history(matches: list) -> str:
+    if not matches:
+        return "  No recent match data available."
+    lines = []
+    for m in matches:
+        result = "WIN" if m["win"] else "LOSS"
+        kda = f"{m['kills']}/{m['deaths']}/{m['assists']}"
+        lines.append(f"  - {m['champion']} ({m['role']}) — {result} {kda}")
+    wins = sum(1 for m in matches if m["win"])
+    lines.append(f"  Recent record: {wins}W {len(matches) - wins}L")
+    return "\n".join(lines)
+
+
 def build_system_prompt(profile, ally_team, enemy_team):
+    # build item context for each favorite champ using item_filter
     if profile["favorite_champs"]:
         champ_restriction = f"Only recommend champions from the user's favorite list: {profile['favorite_champs']}"
-        build_context_block = ""
+        item_context = ""
         for champ in profile["favorite_champs"]:
-            build_context_block += get_build_context(champ, profile["role"]) + "\n\n"
-        build_section = f"""--- VERIFIED BUILD DATA (Patch {patch_info['patch']}, sourced from U.GG) ---
-{build_context_block}
---- END BUILD DATA ---"""
+            item_context += format_items_for_prompt(champ) + "\n\n"
+        build_section = f"""--- CURRENT PATCH ITEM DATA (Patch {patch_info['patch']}, filtered by champion class) ---
+{item_context}
+--- END ITEM DATA ---"""
     else:
         champ_restriction = "The user has no favorite champions — recommend the single best champion for this situation from the entire champion pool."
-        build_section = "No curated builds provided. Use your knowledge to recommend a strong current-meta build for whatever champion you recommend."
+        build_section = "No specific champion selected. Use your knowledge to recommend the best champion and a strong current-meta build."
+
+    # match history section
+    match_history = profile.get("recent_matches", [])
+    match_section = format_match_history(match_history)
 
     return f"""
 You are a high-elo League of Legends coach. Given the full draft and the user's profile, recommend the best champion pick and item build.
@@ -82,6 +74,9 @@ User profile:
 - Rank: {profile['rank']}
 - Role: {profile['role']}
 - Favorite champions: {profile['favorite_champs'] if profile['favorite_champs'] else 'None — recommend from full champion pool'}
+
+Recent match history:
+{match_section}
 
 Allied team (by role):
 {format_team(ally_team)}
@@ -93,13 +88,15 @@ IMPORTANT:
 - {champ_restriction}
 - Do NOT recommend champions already picked by allies or enemies
 - Consider both ally synergies and enemy counters when making your recommendation
+- Base item recommendations ONLY on the verified item data provided below
+- Take the user's recent match history into account — if they are struggling on a champion, factor that in
 
 {build_section}
 
 Always respond with:
 1. Best champion pick, why it counters the enemy comp, and how it synergizes with allies
 2. Recommended item build with explanation of each item choice
-3. One or two gameplay tips for this matchup
+3. One or two gameplay tips for this matchup based on their recent performance
 """
 
 # -------------------------------------------------------
@@ -128,13 +125,11 @@ with st.sidebar:
                     fetched = get_player_profile(game_name, tag_line)
                     st.session_state.fetched_profile = fetched
 
-                    # force champion dropdowns to update
                     fetched_champs = fetched.get("favorite_champs", [])
                     for i in range(5):
                         champ = fetched_champs[i] if i < len(fetched_champs) else ""
                         st.session_state[f"fav{i}"] = champ if champ in champion_data else ""
 
-                    # force rank and role
                     if fetched.get("rank") in RANKS:
                         st.session_state["rank"] = fetched["rank"]
                     if fetched.get("role") in ROLES:
@@ -144,12 +139,13 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"Could not load profile: {e}")
 
-    fetched = st.session_state.get("fetched_profile", {})
+    if "rank" not in st.session_state:
+        st.session_state["rank"] = "Gold"
+    if "role" not in st.session_state:
+        st.session_state["role"] = "Mid"
 
-    rank = st.selectbox("Rank", RANKS, key="rank",
-                        index=RANKS.index(st.session_state.get("rank", "Gold")) if st.session_state.get("rank") in RANKS else 3)
-    role = st.selectbox("Role", ROLES, key="role",
-                        index=ROLES.index(st.session_state.get("role", "Mid")) if st.session_state.get("role") in ROLES else 2)
+    rank = st.selectbox("Rank", RANKS, key="rank")
+    role = st.selectbox("Role", ROLES, key="role")
 
     st.markdown("**Favorite Champions** *(auto-filled from your account, or set manually)*")
     favs = []
@@ -175,7 +171,7 @@ with st.sidebar:
     start = st.button("Start Session", type="primary", use_container_width=True)
 
 # -------------------------------------------------------
-# Session state
+# Session state init
 # -------------------------------------------------------
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -189,6 +185,7 @@ if start:
         "rank": rank,
         "role": role,
         "favorite_champs": favorite_champs,
+        "recent_matches": fetched.get("recent_matches", []),
     }
     system_prompt = build_system_prompt(profile, ally_team, enemy_team)
     st.session_state.messages = [{"role": "system", "content": system_prompt}]
@@ -217,6 +214,7 @@ else:
     ally_team = st.session_state.ally_team
     enemy_team = st.session_state.enemy_team
 
+    # draft summary
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Your Team**")
@@ -230,9 +228,20 @@ else:
             if c:
                 st.markdown(f"- {r}: {c}")
 
+    # match history expander
+    recent = profile.get("recent_matches", [])
+    if recent:
+        with st.expander(f"Recent Match History ({len(recent)} games)"):
+            wins = sum(1 for m in recent if m["win"])
+            st.caption(f"Record: {wins}W {len(recent) - wins}L")
+            for m in recent:
+                result_color = "🟢" if m["win"] else "🔴"
+                kda = f"{m['kills']}/{m['deaths']}/{m['assists']}"
+                st.markdown(f"{result_color} **{m['champion']}** ({m['role']}) — {kda}")
+
     st.divider()
 
-    # display conversation history (skip system prompt at index 0)
+    # conversation history
     for msg in st.session_state.messages[1:]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])
