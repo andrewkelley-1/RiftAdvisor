@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from riot_api import get_player_profile
 from item_filter import format_items_for_prompt, get_champion_classes
+from vector_store import retrieve_items
 
 # -------------------------------------------------------
 # Setup
@@ -49,19 +50,32 @@ def format_match_history(matches: list) -> str:
 
 
 def build_system_prompt(profile, ally_team, enemy_team):
-    # build item context for each favorite champ using item_filter
+    # ----------------------------
+    # Champion restriction logic (UNCHANGED)
+    # ----------------------------
     if profile["favorite_champs"]:
         champ_restriction = f"Only recommend champions from the user's favorite list: {profile['favorite_champs']}"
-        item_context = ""
-        for champ in profile["favorite_champs"]:
-            item_context += format_items_for_prompt(champ) + "\n\n"
-        build_section = f"""--- CURRENT PATCH ITEM DATA (Patch {patch_info['patch']}, filtered by champion class) ---
-{item_context}
---- END ITEM DATA ---"""
     else:
         champ_restriction = "The user has no favorite champions — recommend the single best champion for this situation from the entire champion pool."
-        build_section = "No specific champion selected. Use your knowledge to recommend the best champion and a strong current-meta build."
 
+    # ----------------------------
+    # NEW: Retrieval-based item context (THIS IS THE ONLY CHANGE)
+    # ----------------------------
+    enemy_champs = [c for c in enemy_team.values() if c]
+    ally_champs = [c for c in ally_team.values() if c]
+
+    champ_classes = get_champion_classes(profile["favorite_champs"][0]) if profile["favorite_champs"] else ["Fighter"]
+    role_class = ", ".join(champ_classes).lower()
+
+    offensive_query = f"{role_class} champion in {profile['role']} lane against {', '.join(enemy_champs)}"
+    defensive_query = f"survivability and defensive items against {', '.join(enemy_champs)} with heavy engage"
+
+    item_context = retrieve_items(offensive_query, n_results=10)
+    item_context += "\n\n" + retrieve_items(defensive_query, n_results=8)
+
+    build_section = f"""--- RETRIEVED ITEM DATA (semantic search, Patch {patch_info['patch']}) ---
+{item_context}
+--- END ITEM DATA ---"""
     # match history section
     match_history = profile.get("recent_matches", [])
     match_section = format_match_history(match_history)
