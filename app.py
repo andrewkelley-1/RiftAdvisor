@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 import json
 from pathlib import Path
+from riot_api import get_player_profile
 
 # -------------------------------------------------------
 # Setup
@@ -25,6 +26,7 @@ champion_data = load_json(DATA_DIR / "champions.json")
 
 ALL_CHAMPIONS = [""] + sorted(champion_data.keys())
 ROLES = ["Top", "Jungle", "Mid", "Bot", "Support"]
+RANKS = ["Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"]
 
 # -------------------------------------------------------
 # Build enrichment
@@ -60,7 +62,6 @@ def format_team(team_dict):
     ) or "  None selected"
 
 def build_system_prompt(profile, ally_team, enemy_team):
-    # handle optional favorites
     if profile["favorite_champs"]:
         champ_restriction = f"Only recommend champions from the user's favorite list: {profile['favorite_champs']}"
         build_context_block = ""
@@ -77,9 +78,9 @@ def build_system_prompt(profile, ally_team, enemy_team):
 You are a high-elo League of Legends coach. Given the full draft and the user's profile, recommend the best champion pick and item build.
 
 User profile:
+- Riot ID: {profile.get('riot_id', 'Unknown')}
 - Rank: {profile['rank']}
 - Role: {profile['role']}
-- Playstyle: {profile['playstyle']}
 - Favorite champions: {profile['favorite_champs'] if profile['favorite_champs'] else 'None — recommend from full champion pool'}
 
 Allied team (by role):
@@ -109,21 +110,51 @@ st.title("⚔️ Rift Advisor")
 st.caption(f"AI League of Legends Coach — Patch {patch_info['patch']}")
 
 # -------------------------------------------------------
-# Sidebar — user profile
+# Sidebar
 # -------------------------------------------------------
 with st.sidebar:
     st.header("Your Profile")
 
-    rank = st.selectbox("Rank", [
-        "Iron", "Bronze", "Silver", "Gold", "Platinum",
-        "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"
-    ], index=3)
+    riot_id_input = st.text_input("Riot ID", placeholder="Name#TAG")
+    load_btn = st.button("Load Profile", use_container_width=True)
 
-    role = st.selectbox("Role", ROLES, index=2)
-    playstyle = st.selectbox("Playstyle", ["Aggressive", "Passive", "Balanced", "Roaming"])
+    if load_btn and riot_id_input:
+        if "#" not in riot_id_input:
+            st.error("Enter your full Riot ID with tag, e.g. saya#steez")
+        else:
+            with st.spinner("Fetching profile..."):
+                try:
+                    game_name, tag_line = riot_id_input.split("#", 1)
+                    fetched = get_player_profile(game_name, tag_line)
+                    st.session_state.fetched_profile = fetched
 
-    st.markdown("**Favorite Champions** *(optional — leave blank for best overall pick)*")
-    favs = [st.selectbox(f"Champion {i+1}", ALL_CHAMPIONS, key=f"fav{i}") for i in range(5)]
+                    # force champion dropdowns to update
+                    fetched_champs = fetched.get("favorite_champs", [])
+                    for i in range(5):
+                        champ = fetched_champs[i] if i < len(fetched_champs) else ""
+                        st.session_state[f"fav{i}"] = champ if champ in champion_data else ""
+
+                    # force rank and role
+                    if fetched.get("rank") in RANKS:
+                        st.session_state["rank"] = fetched["rank"]
+                    if fetched.get("role") in ROLES:
+                        st.session_state["role"] = fetched["role"]
+
+                    st.success(f"Loaded {fetched['rank_detail']} — {fetched['role']} main")
+                except Exception as e:
+                    st.error(f"Could not load profile: {e}")
+
+    fetched = st.session_state.get("fetched_profile", {})
+
+    rank = st.selectbox("Rank", RANKS, key="rank",
+                        index=RANKS.index(st.session_state.get("rank", "Gold")) if st.session_state.get("rank") in RANKS else 3)
+    role = st.selectbox("Role", ROLES, key="role",
+                        index=ROLES.index(st.session_state.get("role", "Mid")) if st.session_state.get("role") in ROLES else 2)
+
+    st.markdown("**Favorite Champions** *(auto-filled from your account, or set manually)*")
+    favs = []
+    for i in range(5):
+        favs.append(st.selectbox(f"Champion {i+1}", ALL_CHAMPIONS, key=f"fav{i}"))
     favorite_champs = [c for c in favs if c]
 
     st.divider()
@@ -152,11 +183,12 @@ if "session_active" not in st.session_state:
     st.session_state.session_active = False
 
 if start:
+    fetched = st.session_state.get("fetched_profile", {})
     profile = {
+        "riot_id": f"{fetched.get('game_name', '')}#{fetched.get('tag_line', '')}" if fetched else "",
         "rank": rank,
         "role": role,
-        "playstyle": playstyle.lower(),
-        "favorite_champs": favorite_champs
+        "favorite_champs": favorite_champs,
     }
     system_prompt = build_system_prompt(profile, ally_team, enemy_team)
     st.session_state.messages = [{"role": "system", "content": system_prompt}]
@@ -165,11 +197,21 @@ if start:
     st.session_state.ally_team = ally_team
     st.session_state.enemy_team = enemy_team
 
+    # auto-send opening question
+    opening = "Based on my profile and the current draft, what champion should I pick and what should I build?"
+    st.session_state.messages.append({"role": "user", "content": opening})
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=st.session_state.messages
+    )
+    reply = response.choices[0].message.content
+    st.session_state.messages.append({"role": "assistant", "content": reply})
+
 # -------------------------------------------------------
 # Main chat area
 # -------------------------------------------------------
 if not st.session_state.session_active:
-    st.info("Fill out your profile and draft in the sidebar, then click **Start Session**.")
+    st.info("Load your profile or fill it in manually, set the draft in the sidebar, then click **Start Session**.")
 else:
     profile = st.session_state.profile
     ally_team = st.session_state.ally_team
@@ -190,6 +232,7 @@ else:
 
     st.divider()
 
+    # display conversation history (skip system prompt at index 0)
     for msg in st.session_state.messages[1:]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])

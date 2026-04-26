@@ -73,10 +73,11 @@ def parse_champions(raw_champs: dict) -> dict:
     for champ_id, champ in raw_champs.items():
         parsed[champ["name"]] = {
             "id": champ_id,
+            "key": champ["key"],          # add this line
             "title": champ.get("title", ""),
-            "tags": champ.get("tags", []),   # e.g. ["Mage", "Assassin"]
-            "stats": champ.get("stats", {}), # base HP, AD, AP, etc.
-            "partype": champ.get("partype", "Mana"),  # resource type
+            "tags": champ.get("tags", []),
+            "stats": champ.get("stats", {}),
+            "partype": champ.get("partype", "Mana"),
         }
     return parsed
 
