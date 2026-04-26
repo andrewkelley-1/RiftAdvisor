@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent / "data"
+ROOT_DIR = Path(__file__).parent.parent
+DATA_DIR = ROOT_DIR / "data"
 
 def load_json(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
@@ -12,21 +13,26 @@ champion_data = load_json(DATA_DIR / "champions.json")
 
 ITEM_BLACKLIST = {
     "The Golden Spatula",
-    "Wooglet's Witchcap",
+    "Wooglet's Witchcap", 
     "Deathfire Grasp",
     "Void Immolation",
 }
 
-EXCLUDE_TAGS = {"Jungle", "Lane", "GoldPer", "Consumable", "Boots", "Vision", "Stealth"}
-
+# -------------------------------------------------------
+# Map champion class tags to relevant item tags
+# A champion can have multiple classes so we union the sets
+# -------------------------------------------------------
+# Map champion class to the STAT KEYS that must be present in the item
 CLASS_TO_REQUIRED_STATS = {
-    "Mage":      ["FlatMagicDamageMod"],
-    "Assassin":  ["FlatMagicDamageMod", "FlatPhysicalDamageMod"],
-    "Marksman":  ["FlatPhysicalDamageMod", "FlatCritChanceMod", "PercentAttackSpeedMod"],
-    "Tank":      ["FlatHPPoolMod", "FlatArmorMod", "FlatSpellBlockMod"],
-    "Fighter":   ["FlatPhysicalDamageMod", "FlatHPPoolMod"],
-    "Support":   ["FlatHPPoolMod", "FlatArmorMod", "FlatSpellBlockMod"],
+    "Mage":     ["FlatMagicDamageMod"],
+    "Assassin": ["FlatMagicDamageMod", "FlatPhysicalDamageMod"],
+    "Marksman": ["FlatPhysicalDamageMod", "FlatCritChanceMod", "PercentAttackSpeedMod"],
+    "Tank":     ["FlatHPPoolMod", "FlatArmorMod", "FlatSpellBlockMod"],
+    "Fighter":  ["FlatPhysicalDamageMod", "FlatHPPoolMod"],
+    "Support":  ["FlatHPPoolMod", "FlatArmorMod", "FlatSpellBlockMod"],
 }
+# tags to always exclude regardless of champion class
+EXCLUDE_TAGS = {"Jungle", "Lane", "GoldPer", "Consumable", "Boots", "Vision", "Stealth"}
 
 
 def get_champion_classes(champion_name: str) -> list:
@@ -35,14 +41,22 @@ def get_champion_classes(champion_name: str) -> list:
     return champ.get("tags", [])
 
 
+def get_relevant_item_tags(champion_name: str) -> set:
+    """Union all item tag sets for a champion's classes."""
+    classes = get_champion_classes(champion_name)
+    relevant = set()
+    for cls in classes:
+        relevant.update(CLASS_TO_ITEM_TAGS.get(cls, []))
+    # fallback — if we couldn't map anything just return broad set
+    if not relevant:
+        relevant = {"Damage", "Health", "AbilityHaste", "SpellDamage"}
+    return relevant
+
+
 def filter_items_for_champion(champion_name: str, max_items: int = 25) -> dict:
-    """
-    Return a filtered subset of items relevant to this champion's class
-    based on stat keys. Excludes joke/ARAM/removed items, jungle items,
-    consumables, and items outside the normal completed item price range.
-    """
     classes = get_champion_classes(champion_name)
 
+    # union of required stats across all classes
     required_stats = set()
     for cls in classes:
         required_stats.update(CLASS_TO_REQUIRED_STATS.get(cls, []))
@@ -56,18 +70,19 @@ def filter_items_for_champion(champion_name: str, max_items: int = 25) -> dict:
         item_stats = set(item.get("stats", {}).keys())
         cost = item.get("cost", 0)
 
+        # skip blacklisted, excluded tags, too cheap or absurdly expensive
         if item_name in ITEM_BLACKLIST:
             continue
         if item_tags & EXCLUDE_TAGS:
             continue
-        if cost < 2500 or cost > 5000:
+        if cost < 2500 or cost > 5000:  # only completed items in normal price range
             continue
+
         if item_stats & required_stats:
             filtered[item_name] = item
 
     sorted_items = sorted(filtered.items(), key=lambda x: x[1].get("cost", 0), reverse=True)
     return dict(sorted_items[:max_items])
-
 
 def format_items_for_prompt(champion_name: str) -> str:
     """
@@ -80,7 +95,9 @@ def format_items_for_prompt(champion_name: str) -> str:
     if not filtered:
         return f"No item data available for {champion_name}."
 
-    lines = [f"Current patch items relevant for {champion_name} ({', '.join(classes)}):"]
+    lines = [
+        f"Current patch items relevant for {champion_name} ({', '.join(classes)}):",
+    ]
     for item_name, item in filtered.items():
         stats_str = ", ".join(
             f"{k}: {v}" for k, v in item.get("stats", {}).items()

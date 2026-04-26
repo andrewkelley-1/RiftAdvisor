@@ -16,7 +16,7 @@ if not api_key:
 
 client = Groq(api_key=api_key)
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent.parent / "data"
 BUILDS_DIR = Path(__file__).parent / "builds"
 
 if not (DATA_DIR / "items.json").exists():

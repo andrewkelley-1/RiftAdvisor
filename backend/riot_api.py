@@ -3,7 +3,8 @@ import os
 from dotenv import load_dotenv
 from pathlib import Path
 
-load_dotenv(Path(__file__).parent / '.env')
+ROOT_DIR = Path(__file__).parent.parent
+load_dotenv(ROOT_DIR / ".env")
 
 RIOT_API_KEY = os.getenv("RIOT_API_KEY")
 if not RIOT_API_KEY:
@@ -69,7 +70,7 @@ def get_top_champions(puuid: str, count: int = 5) -> list[str]:
     # map champion IDs to names using the static data we already have
     from data_dragon import load_json
     from pathlib import Path
-    champion_data = load_json(Path(__file__).parent / "data" / "champions.json")
+    champion_data = load_json(Path(__file__).parent.parent / "data" / "champions.json")
 
     # build reverse map: champion numeric ID -> name
     id_to_name = {str(int(data["key"])): name for name, data in champion_data.items()}

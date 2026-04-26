@@ -3,18 +3,28 @@ from groq import Groq
 from dotenv import load_dotenv
 import os
 import json
+import sys
+import chromadb
 from pathlib import Path
+from sentence_transformers import SentenceTransformer
+
+# add backend and prompts to path before importing from them
+ROOT_DIR = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT_DIR / "backend"))
+sys.path.append(str(ROOT_DIR / "prompts"))
+
 from riot_api import get_player_profile
 from item_filter import format_items_for_prompt, get_champion_classes
 from vector_store import retrieve_items
+from prompt_builder import build_system_prompt
 
 # -------------------------------------------------------
 # Setup
 # -------------------------------------------------------
-load_dotenv(Path(__file__).parent / '.env')
+load_dotenv(ROOT_DIR / ".env")
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = ROOT_DIR / "data"
 
 def load_json(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
@@ -28,90 +38,16 @@ ROLES = ["Top", "Jungle", "Mid", "Bot", "Support"]
 RANKS = ["Iron", "Bronze", "Silver", "Gold", "Platinum", "Emerald", "Diamond", "Master", "Grandmaster", "Challenger"]
 
 # -------------------------------------------------------
-# Helpers
+# Cache heavy resources so they load once per session
 # -------------------------------------------------------
-def format_team(team_dict):
-    return "\n".join(
-        f"  - {role}: {champ}" for role, champ in team_dict.items() if champ
-    ) or "  None selected"
+@st.cache_resource
+def load_embedding_model():
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
-
-def format_match_history(matches: list) -> str:
-    if not matches:
-        return "  No recent match data available."
-    lines = []
-    for m in matches:
-        result = "WIN" if m["win"] else "LOSS"
-        kda = f"{m['kills']}/{m['deaths']}/{m['assists']}"
-        lines.append(f"  - {m['champion']} ({m['role']}) — {result} {kda}")
-    wins = sum(1 for m in matches if m["win"])
-    lines.append(f"  Recent record: {wins}W {len(matches) - wins}L")
-    return "\n".join(lines)
-
-
-def build_system_prompt(profile, ally_team, enemy_team):
-    # ----------------------------
-    # Champion restriction logic (UNCHANGED)
-    # ----------------------------
-    if profile["favorite_champs"]:
-        champ_restriction = f"Only recommend champions from the user's favorite list: {profile['favorite_champs']}"
-    else:
-        champ_restriction = "The user has no favorite champions — recommend the single best champion for this situation from the entire champion pool."
-
-    # ----------------------------
-    # NEW: Retrieval-based item context (THIS IS THE ONLY CHANGE)
-    # ----------------------------
-    enemy_champs = [c for c in enemy_team.values() if c]
-    ally_champs = [c for c in ally_team.values() if c]
-
-    champ_classes = get_champion_classes(profile["favorite_champs"][0]) if profile["favorite_champs"] else ["Fighter"]
-    role_class = ", ".join(champ_classes).lower()
-
-    offensive_query = f"{role_class} champion in {profile['role']} lane against {', '.join(enemy_champs)}"
-    defensive_query = f"survivability and defensive items against {', '.join(enemy_champs)} with heavy engage"
-
-    item_context = retrieve_items(offensive_query, n_results=10)
-    item_context += "\n\n" + retrieve_items(defensive_query, n_results=8)
-
-    build_section = f"""--- RETRIEVED ITEM DATA (semantic search, Patch {patch_info['patch']}) ---
-{item_context}
---- END ITEM DATA ---"""
-    # match history section
-    match_history = profile.get("recent_matches", [])
-    match_section = format_match_history(match_history)
-
-    return f"""
-You are a high-elo League of Legends coach. Given the full draft and the user's profile, recommend the best champion pick and item build.
-
-User profile:
-- Riot ID: {profile.get('riot_id', 'Unknown')}
-- Rank: {profile['rank']}
-- Role: {profile['role']}
-- Favorite champions: {profile['favorite_champs'] if profile['favorite_champs'] else 'None — recommend from full champion pool'}
-
-Recent match history:
-{match_section}
-
-Allied team (by role):
-{format_team(ally_team)}
-
-Enemy team (by role):
-{format_team(enemy_team)}
-
-IMPORTANT:
-- {champ_restriction}
-- Do NOT recommend champions already picked by allies or enemies
-- Consider both ally synergies and enemy counters when making your recommendation
-- Base item recommendations ONLY on the verified item data provided below
-- Take the user's recent match history into account — if they are struggling on a champion, factor that in
-
-{build_section}
-
-Always respond with:
-1. Best champion pick, why it counters the enemy comp, and how it synergizes with allies
-2. Recommended item build with explanation of each item choice
-3. One or two gameplay tips for this matchup based on their recent performance
-"""
+@st.cache_resource
+def load_chroma_collection():
+    c = chromadb.PersistentClient(path=str(ROOT_DIR / "chroma_db"))
+    return c.get_collection("items")
 
 # -------------------------------------------------------
 # Page config
@@ -201,7 +137,19 @@ if start:
         "favorite_champs": favorite_champs,
         "recent_matches": fetched.get("recent_matches", []),
     }
-    system_prompt = build_system_prompt(profile, ally_team, enemy_team)
+
+    model = load_embedding_model()
+    collection = load_chroma_collection()
+
+    system_prompt = build_system_prompt(
+        profile,
+        ally_team,
+        enemy_team,
+        patch=patch_info["patch"],
+        model=model,
+        collection=collection,
+    )
+
     st.session_state.messages = [{"role": "system", "content": system_prompt}]
     st.session_state.session_active = True
     st.session_state.profile = profile
@@ -228,7 +176,6 @@ else:
     ally_team = st.session_state.ally_team
     enemy_team = st.session_state.enemy_team
 
-    # draft summary
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("**Your Team**")
@@ -242,7 +189,6 @@ else:
             if c:
                 st.markdown(f"- {r}: {c}")
 
-    # match history expander
     recent = profile.get("recent_matches", [])
     if recent:
         with st.expander(f"Recent Match History ({len(recent)} games)"):
@@ -255,7 +201,6 @@ else:
 
     st.divider()
 
-    # conversation history
     for msg in st.session_state.messages[1:]:
         with st.chat_message(msg["role"]):
             st.markdown(msg["content"])

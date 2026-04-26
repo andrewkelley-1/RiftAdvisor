@@ -7,7 +7,7 @@ from pathlib import Path
 # Pulls the latest patch item + champion data and saves
 # -------------------------------------------------------
 
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
 

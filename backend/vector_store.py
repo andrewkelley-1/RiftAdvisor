@@ -3,8 +3,8 @@ import chromadb
 from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
-DATA_DIR = Path(__file__).parent / "data"
-CHROMA_DIR = Path(__file__).parent / "chroma_db"
+DATA_DIR = Path(__file__).parent.parent / "data"
+CHROMA_DIR = Path(__file__).parent.parent / "chroma_db"
 
 def load_json(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
@@ -177,18 +177,14 @@ def build_vector_store():
 # -------------------------------------------------------
 # Query the vector store
 # -------------------------------------------------------
-def retrieve_items(query: str, n_results: int = 15) -> str:
-    """
-    Given a natural language query describing the game situation,
-    retrieve the most semantically relevant items and return them
-    as a formatted string ready to inject into the prompt.
-    """
-    model = SentenceTransformer("all-MiniLM-L6-v2")
+def retrieve_items(query: str, n_results: int = 15, model=None, collection=None) -> str:
+    if model is None:
+        model = SentenceTransformer("all-MiniLM-L6-v2")
+    if collection is None:
+        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        collection = client.get_collection("items")
+
     query_embedding = model.encode(query).tolist()
-
-    client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-    collection = client.get_collection("items")
-
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=n_results,
@@ -200,9 +196,7 @@ def retrieve_items(query: str, n_results: int = 15) -> str:
     lines = [f"Semantically retrieved items relevant to: '{query}'\n"]
     for item_name, doc in zip(ids, docs):
         lines.append(f"  - {doc}")
-
     return "\n".join(lines)
-
 
 # -------------------------------------------------------
 # Test
