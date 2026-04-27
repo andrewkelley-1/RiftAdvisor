@@ -1,7 +1,7 @@
 # ⚔️ Rift Advisor — AI League of Legends Coach
 
 **Project Title:** Rift Advisor  
-**Team Members:** Andrew Kelly  
+**Team Members:** Andrew Kelley  
 **Domain:** Gaming — League of Legends draft and item build coaching
 
 ---
